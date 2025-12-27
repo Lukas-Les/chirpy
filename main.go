@@ -103,6 +103,25 @@ func (cfg *apiConfig) handlerChirps(w http.ResponseWriter, req *http.Request) {
 	respondWithJson(w, 201, chirpy)
 }
 
+func (cfg *apiConfig) handerGetAllChirps(w http.ResponseWriter, req *http.Request) {
+	chirps, err := cfg.db.GetAllChirps(context.Background())
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("failed to get chirps: %s", err))
+	}
+	result := []ResponseChirps{}
+	for _, dbChirp := range chirps {
+		chirp := ResponseChirps{
+			Id:        dbChirp.ID,
+			CreatedAt: dbChirp.CreatedAt,
+			UpdatedAt: dbChirp.UpdatedAt,
+			Body:      dbChirp.Body,
+			UserId:    dbChirp.UserID,
+		}
+		result = append(result, chirp)
+	}
+	respondWithJson(w, 200, result)
+}
+
 type RequestUsers struct {
 	Email string `json:"email"`
 }
@@ -155,6 +174,7 @@ func main() {
 	mux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
 	mux.HandleFunc("POST /api/users", cfg.handlerUsers)
 	mux.HandleFunc("POST /api/chirps", cfg.handlerChirps)
+	mux.HandleFunc("GET /api/chirps", cfg.handerGetAllChirps)
 	srv := &http.Server{
 		Addr:    ":" + port,
 		Handler: mux,
