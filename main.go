@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -63,7 +64,7 @@ type RequestChirps struct {
 	UserId uuid.UUID `json:"user_id"`
 }
 
-type ResponseChirps struct {
+type Chirp struct {
 	Id        uuid.UUID `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -71,7 +72,7 @@ type ResponseChirps struct {
 	UserId    uuid.UUID `json:"user_id"`
 }
 
-func (cfg *apiConfig) handlerChirps(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, req *http.Request) {
 	decoder := json.NewDecoder(req.Body)
 	r := RequestChirps{}
 	err := decoder.Decode(&r)
@@ -93,7 +94,7 @@ func (cfg *apiConfig) handlerChirps(w http.ResponseWriter, req *http.Request) {
 		respondWithError(w, 500, "failed to insert chirpy")
 		return
 	}
-	chirpy := ResponseChirps{
+	chirpy := Chirp{
 		Id:        dbChripy.ID,
 		CreatedAt: dbChripy.CreatedAt,
 		UpdatedAt: dbChripy.UpdatedAt,
@@ -108,9 +109,9 @@ func (cfg *apiConfig) handerGetAllChirps(w http.ResponseWriter, req *http.Reques
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("failed to get chirps: %s", err))
 	}
-	result := []ResponseChirps{}
+	result := []Chirp{}
 	for _, dbChirp := range chirps {
-		chirp := ResponseChirps{
+		chirp := Chirp{
 			Id:        dbChirp.ID,
 			CreatedAt: dbChirp.CreatedAt,
 			UpdatedAt: dbChirp.UpdatedAt,
@@ -120,6 +121,34 @@ func (cfg *apiConfig) handerGetAllChirps(w http.ResponseWriter, req *http.Reques
 		result = append(result, chirp)
 	}
 	respondWithJson(w, 200, result)
+}
+
+func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, req *http.Request) {
+	idStr := req.PathValue("id")
+	chirpId, err := uuid.Parse(idStr)
+	if err != nil {
+		respondWithError(w, 400, "bad id")
+		return
+	}
+
+	dbChirp, err := cfg.db.GetChirpById(req.Context(), chirpId)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			respondWithError(w, 404, "not found")
+			return
+		}
+		respondWithError(w, 500, err.Error())
+		return
+	}
+
+	chirp := Chirp{
+		Id:        dbChirp.ID,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.UpdatedAt,
+		Body:      dbChirp.Body,
+		UserId:    dbChirp.UserID,
+	}
+	respondWithJson(w, 200, chirp)
 }
 
 type RequestUsers struct {
@@ -133,7 +162,7 @@ type User struct {
 	Email     string    `json:"email"`
 }
 
-func (cfg *apiConfig) handlerUsers(w http.ResponseWriter, req *http.Request) {
+func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter, req *http.Request) {
 	decoder := json.NewDecoder(req.Body)
 	r := RequestUsers{}
 	err := decoder.Decode(&r)
@@ -172,9 +201,11 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", cfg.handlerStats)
 	mux.HandleFunc("POST /admin/reset", cfg.handlerResetStats)
 	mux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
-	mux.HandleFunc("POST /api/users", cfg.handlerUsers)
-	mux.HandleFunc("POST /api/chirps", cfg.handlerChirps)
+	mux.HandleFunc("POST /api/users", cfg.handlerUsersCreate)
+	mux.HandleFunc("POST /api/chirps", cfg.handlerChirpsCreate)
 	mux.HandleFunc("GET /api/chirps", cfg.handerGetAllChirps)
+	mux.HandleFunc("GET /api/chirps/{id}", cfg.handlerGetChirp)
+
 	srv := &http.Server{
 		Addr:    ":" + port,
 		Handler: mux,
