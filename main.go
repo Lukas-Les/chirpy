@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Lukas-Les/chirpy/internal/auth"
 	"github.com/Lukas-Les/chirpy/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -152,7 +153,8 @@ func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, req *http.Request) 
 }
 
 type RequestUsers struct {
-	Email string `json:"email"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
 }
 
 type User struct {
@@ -170,7 +172,13 @@ func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter, req *http.Reques
 		respondWithError(w, 500, "failed to parse request")
 		return
 	}
-	dbUser, err := cfg.db.CreateUser(context.Background(), r.Email)
+	hashedPassword, err := auth.HashPassword(r.Password)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	params := database.CreateUserParams{Email: r.Email, HashedPassword: hashedPassword}
+	dbUser, err := cfg.db.CreateUser(req.Context(), params)
 	user := User{
 		ID:        dbUser.ID,
 		CreatedAt: dbUser.CreatedAt,
@@ -179,6 +187,7 @@ func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter, req *http.Reques
 	}
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("failed to create an user: %s", err))
+		return
 	}
 	respondWithJson(w, 201, user)
 }

@@ -4,7 +4,7 @@ import (
 	"github.com/alexedwards/argon2id"
 )
 
-func hashPassword(password string) (string, error) {
+func HashPassword(password string) (string, error) {
 	hash, err := argon2id.CreateHash("pa$$word", argon2id.DefaultParams)
 	if err != nil {
 		return "", err
