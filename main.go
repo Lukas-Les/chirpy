@@ -172,7 +172,9 @@ func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter, req *http.Reques
 		respondWithError(w, 500, "failed to parse request")
 		return
 	}
+	fmt.Printf("creating with:\n\tusername: %s\npassord: %s\n", r.Email, r.Password)
 	hashedPassword, err := auth.HashPassword(r.Password)
+	fmt.Printf("hashed_password: %s\n", hashedPassword)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "internal error")
 		return
@@ -190,6 +192,47 @@ func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter, req *http.Reques
 		return
 	}
 	respondWithJson(w, 201, user)
+}
+
+type RequestLogIn struct {
+	Password string `json:"password"`
+	Email    string `json:"email"`
+}
+
+func (cfg *apiConfig) handlerLogIn(w http.ResponseWriter, req *http.Request) {
+	decoder := json.NewDecoder(req.Body)
+	r := RequestLogIn{}
+	err := decoder.Decode(&r)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+	dbUser, err := cfg.db.GetUserByEmail(req.Context(), r.Email)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+	}
+	fmt.Printf("logging in with:\n\tusername: %s\npassord: %s\n", r.Email, r.Password)
+	fmt.Printf("hashed_password: %s\n", dbUser.HashedPassword)
+
+	fmt.Printf("password len=%d, bytes=%v\n", len(r.Password), []byte(r.Password))
+	fmt.Printf("hash len=%d, bytes=%v\n", len(dbUser.HashedPassword), []byte(dbUser.HashedPassword))
+	isValid, err := auth.CheckPasswordHash(r.Password, dbUser.HashedPassword)
+	fmt.Printf("isValid=%v, err=%v\n", isValid, err)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
+	}
+	if !isValid {
+		respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
+		return
+	}
+	user := User{
+		ID:        dbUser.ID,
+		CreatedAt: dbUser.CreatedAt,
+		UpdatedAt: dbUser.UpdatedAt,
+		Email:     dbUser.Email,
+	}
+	respondWithJson(w, http.StatusOK, user)
 }
 
 func main() {
@@ -214,6 +257,7 @@ func main() {
 	mux.HandleFunc("POST /api/chirps", cfg.handlerChirpsCreate)
 	mux.HandleFunc("GET /api/chirps", cfg.handerGetAllChirps)
 	mux.HandleFunc("GET /api/chirps/{id}", cfg.handlerGetChirp)
+	mux.HandleFunc("POST /api/login", cfg.handlerLogIn)
 
 	srv := &http.Server{
 		Addr:    ":" + port,
