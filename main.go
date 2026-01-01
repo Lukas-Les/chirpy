@@ -22,6 +22,7 @@ import (
 
 const port = "8080"
 const maxChirpLen = 140
+const defaultErrorMsg = "Something bad happened"
 
 var badWords = [3]string{"kerfuffle", "sharbert", "fornax"}
 
@@ -29,6 +30,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	db             *database.Queries
 	platform       string
+	jwtSecret      string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -78,7 +80,17 @@ func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, req *http.Reque
 	r := RequestChirps{}
 	err := decoder.Decode(&r)
 	if err != nil {
-		respondWithError(w, 500, "Something went wrong")
+		respondWithError(w, 500, "Error decoding response")
+		return
+	}
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondWithError(w, 500, "Error getting token")
+		return
+	}
+	userId, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, 401, err.Error())
 		return
 	}
 	if len(r.Body) > maxChirpLen {
@@ -88,11 +100,11 @@ func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, req *http.Reque
 	cleaned := cleanMessage(r.Body)
 	params := database.CreateChirpParams{
 		Body:   cleaned,
-		UserID: r.UserId,
+		UserID: userId,
 	}
 	dbChripy, err := cfg.db.CreateChirp(context.Background(), params)
 	if err != nil {
-		respondWithError(w, 500, "failed to insert chirpy")
+		respondWithError(w, 500, err.Error())
 		return
 	}
 	chirpy := Chirp{
@@ -195,8 +207,17 @@ func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter, req *http.Reques
 }
 
 type RequestLogIn struct {
-	Password string `json:"password"`
-	Email    string `json:"email"`
+	Password         string `json:"password"`
+	Email            string `json:"email"`
+	ExpiresInSeconds string `json:"expires_in_seconds"`
+}
+
+type ResponseLogIn struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+	Token     string    `json:"token"`
 }
 
 func (cfg *apiConfig) handlerLogIn(w http.ResponseWriter, req *http.Request) {
@@ -210,6 +231,7 @@ func (cfg *apiConfig) handlerLogIn(w http.ResponseWriter, req *http.Request) {
 	dbUser, err := cfg.db.GetUserByEmail(req.Context(), r.Email)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Something went wrong")
+		return
 	}
 	fmt.Printf("logging in with:\n\tusername: %s\npassord: %s\n", r.Email, r.Password)
 	fmt.Printf("hashed_password: %s\n", dbUser.HashedPassword)
@@ -226,13 +248,29 @@ func (cfg *apiConfig) handlerLogIn(w http.ResponseWriter, req *http.Request) {
 		respondWithError(w, http.StatusUnauthorized, "Incorrect email or password")
 		return
 	}
-	user := User{
+	var expiresIn time.Duration
+	if r.ExpiresInSeconds != "" {
+		expiresIn, err = time.ParseDuration(fmt.Sprintf("%ss", r.ExpiresInSeconds))
+		if err != nil {
+			respondWithError(w, http.StatusInternalServerError, "Something bad happened")
+			return
+		}
+	} else {
+		expiresIn = time.Hour
+	}
+
+	token, err := auth.MakeJWT(dbUser.ID, cfg.jwtSecret, expiresIn)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, defaultErrorMsg)
+	}
+	resp := ResponseLogIn{
 		ID:        dbUser.ID,
 		CreatedAt: dbUser.CreatedAt,
 		UpdatedAt: dbUser.UpdatedAt,
 		Email:     dbUser.Email,
+		Token:     token,
 	}
-	respondWithJson(w, http.StatusOK, user)
+	respondWithJson(w, http.StatusOK, resp)
 }
 
 func main() {
@@ -246,7 +284,7 @@ func main() {
 	dbQueries := database.New(db)
 	filepathRoot := http.Dir(".")
 	mux := http.NewServeMux()
-	cfg := apiConfig{fileserverHits: atomic.Int32{}, db: dbQueries, platform: os.Getenv("PLATFORM")}
+	cfg := apiConfig{fileserverHits: atomic.Int32{}, db: dbQueries, platform: os.Getenv("PLATFORM"), jwtSecret: os.Getenv("JWT_SECRET")}
 
 	mux.Handle("/app/", http.StripPrefix("/app/", cfg.middlewareMetricsInc(http.FileServer(filepathRoot))))
 	mux.HandleFunc("GET /api/healthz", handlerHeathz)
