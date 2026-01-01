@@ -213,11 +213,12 @@ type RequestLogIn struct {
 }
 
 type ResponseLogIn struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	Token     string    `json:"token"`
+	ID           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
 }
 
 func (cfg *apiConfig) handlerLogIn(w http.ResponseWriter, req *http.Request) {
@@ -263,14 +264,63 @@ func (cfg *apiConfig) handlerLogIn(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, defaultErrorMsg)
 	}
+	refToken, err := auth.MakeRefreshToken()
+	refTokenParams := database.CreateRefreshTokenParams{
+		Token:     refToken,
+		UserID:    dbUser.ID,
+		ExpiresAt: time.Now().Add(time.Hour * 24 * 60),
+	}
+	_, err = cfg.db.CreateRefreshToken(req.Context(), refTokenParams)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	resp := ResponseLogIn{
-		ID:        dbUser.ID,
-		CreatedAt: dbUser.CreatedAt,
-		UpdatedAt: dbUser.UpdatedAt,
-		Email:     dbUser.Email,
-		Token:     token,
+		ID:           dbUser.ID,
+		CreatedAt:    dbUser.CreatedAt,
+		UpdatedAt:    dbUser.UpdatedAt,
+		Email:        dbUser.Email,
+		Token:        token,
+		RefreshToken: refToken,
 	}
 	respondWithJson(w, http.StatusOK, resp)
+}
+
+type RefreshResponse struct {
+	Token string `json:"token"`
+}
+
+func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, req *http.Request) {
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	dbRefReshToken, err := cfg.db.GetRefreshToken(req.Context(), token)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	jwtToken, err := auth.MakeJWT(dbRefReshToken.UserID, cfg.jwtSecret, time.Hour)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	respondWithJson(w, http.StatusOK, RefreshResponse{Token: jwtToken})
+}
+
+func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, req *http.Request) {
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	err = cfg.db.Revoke(req.Context(), token)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func main() {
@@ -296,6 +346,8 @@ func main() {
 	mux.HandleFunc("GET /api/chirps", cfg.handerGetAllChirps)
 	mux.HandleFunc("GET /api/chirps/{id}", cfg.handlerGetChirp)
 	mux.HandleFunc("POST /api/login", cfg.handlerLogIn)
+	mux.HandleFunc("POST /api/refresh", cfg.handlerRefresh)
+	mux.HandleFunc("POST /api/revoke", cfg.handlerRevoke)
 
 	srv := &http.Server{
 		Addr:    ":" + port,
