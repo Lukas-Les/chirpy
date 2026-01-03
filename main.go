@@ -119,7 +119,19 @@ func (cfg *apiConfig) handlerChirpsCreate(w http.ResponseWriter, req *http.Reque
 }
 
 func (cfg *apiConfig) handerGetAllChirps(w http.ResponseWriter, req *http.Request) {
-	chirps, err := cfg.db.GetAllChirps(context.Background())
+	var chirps []database.Chirp
+	var err error
+	authorIdStr := req.URL.Query().Get("author_id")
+	if authorIdStr != "" {
+		authorId, err := uuid.Parse(authorIdStr)
+		if err != nil {
+			respondWithError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		chirps, err = cfg.db.GetChirpsByUser(req.Context(), authorId)
+	} else {
+		chirps, err = cfg.db.GetAllChirps(req.Context())
+	}
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("failed to get chirps: %s", err))
 	}
