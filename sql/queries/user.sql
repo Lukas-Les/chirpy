@@ -23,3 +23,9 @@ SET email = $1,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = $3
 RETURNING *;
+
+-- name: UpdateUserChirpyRed :exec
+UPDATE users
+SET is_chirpy_red = $1,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = $2;

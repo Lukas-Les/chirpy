@@ -31,6 +31,7 @@ type apiConfig struct {
 	db             *database.Queries
 	platform       string
 	jwtSecret      string
+	polkaKey       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -170,10 +171,11 @@ type RequestUsers struct {
 }
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
+	ID          uuid.UUID `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Email       string    `json:"email"`
+	IsChirpyRed bool      `json:"is_chirpy_red"`
 }
 
 func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter, req *http.Request) {
@@ -194,10 +196,11 @@ func (cfg *apiConfig) handlerUsersCreate(w http.ResponseWriter, req *http.Reques
 	params := database.CreateUserParams{Email: r.Email, HashedPassword: hashedPassword}
 	dbUser, err := cfg.db.CreateUser(req.Context(), params)
 	user := User{
-		ID:        dbUser.ID,
-		CreatedAt: dbUser.CreatedAt,
-		UpdatedAt: dbUser.UpdatedAt,
-		Email:     dbUser.Email,
+		ID:          dbUser.ID,
+		CreatedAt:   dbUser.CreatedAt,
+		UpdatedAt:   dbUser.UpdatedAt,
+		Email:       dbUser.Email,
+		IsChirpyRed: dbUser.IsChirpyRed,
 	}
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("failed to create an user: %s", err))
@@ -219,6 +222,7 @@ type ResponseLogIn struct {
 	Email        string    `json:"email"`
 	Token        string    `json:"token"`
 	RefreshToken string    `json:"refresh_token"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 }
 
 func (cfg *apiConfig) handlerLogIn(w http.ResponseWriter, req *http.Request) {
@@ -282,6 +286,7 @@ func (cfg *apiConfig) handlerLogIn(w http.ResponseWriter, req *http.Request) {
 		Email:        dbUser.Email,
 		Token:        token,
 		RefreshToken: refToken,
+		IsChirpyRed:  dbUser.IsChirpyRed,
 	}
 	respondWithJson(w, http.StatusOK, resp)
 }
@@ -411,6 +416,51 @@ func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, req *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type PolkaWebHookRequest struct {
+	Event string `json:"event"`
+	Data  struct {
+		UserID string `json:"user_id"`
+	} `json:"data"`
+}
+
+func (cfg *apiConfig) handlerPolkaWebHook(w http.ResponseWriter, req *http.Request) {
+	apiKey, err := auth.GetAPIKey(req.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	if apiKey != cfg.polkaKey {
+		respondWithError(w, http.StatusUnauthorized, "wrong api key")
+		return
+	}
+	decoder := json.NewDecoder(req.Body)
+	r := PolkaWebHookRequest{}
+	err = decoder.Decode(&r)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if r.Event != "user.upgraded" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	userId, err := uuid.Parse(r.Data.UserID)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	params := database.UpdateUserChirpyRedParams{
+		IsChirpyRed: true,
+		ID:          userId,
+	}
+	err = cfg.db.UpdateUserChirpyRed(context.Background(), params)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func main() {
 	godotenv.Load()
 
@@ -422,12 +472,13 @@ func main() {
 	dbQueries := database.New(db)
 	filepathRoot := http.Dir(".")
 	mux := http.NewServeMux()
-	cfg := apiConfig{fileserverHits: atomic.Int32{}, db: dbQueries, platform: os.Getenv("PLATFORM"), jwtSecret: os.Getenv("JWT_SECRET")}
+	cfg := apiConfig{fileserverHits: atomic.Int32{}, db: dbQueries, platform: os.Getenv("PLATFORM"), jwtSecret: os.Getenv("JWT_SECRET"), polkaKey: os.Getenv("POLKA_KEY")}
 
 	mux.Handle("/app/", http.StripPrefix("/app/", cfg.middlewareMetricsInc(http.FileServer(filepathRoot))))
 	mux.HandleFunc("GET /api/healthz", handlerHeathz)
 	mux.HandleFunc("GET /admin/metrics", cfg.handlerStats)
 	mux.HandleFunc("POST /admin/reset", cfg.handlerResetStats)
+
 	mux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
 	mux.HandleFunc("POST /api/users", cfg.handlerUsersCreate)
 	mux.HandleFunc("POST /api/chirps", cfg.handlerChirpsCreate)
@@ -438,6 +489,9 @@ func main() {
 	mux.HandleFunc("POST /api/revoke", cfg.handlerRevoke)
 	mux.HandleFunc("PUT /api/users", cfg.handlerUpdateUser)
 	mux.HandleFunc("DELETE /api/chirps/{id}", cfg.handlerDeleteChirp)
+
+	mux.HandleFunc("POST /api/polka/webhooks", cfg.handlerPolkaWebHook)
+
 	srv := &http.Server{
 		Addr:    ":" + port,
 		Handler: mux,
