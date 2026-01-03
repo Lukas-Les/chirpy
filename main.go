@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -122,6 +123,7 @@ func (cfg *apiConfig) handerGetAllChirps(w http.ResponseWriter, req *http.Reques
 	var chirps []database.Chirp
 	var err error
 	authorIdStr := req.URL.Query().Get("author_id")
+	sortStr := req.URL.Query().Get("sort")
 	if authorIdStr != "" {
 		authorId, err := uuid.Parse(authorIdStr)
 		if err != nil {
@@ -145,6 +147,15 @@ func (cfg *apiConfig) handerGetAllChirps(w http.ResponseWriter, req *http.Reques
 			UserId:    dbChirp.UserID,
 		}
 		result = append(result, chirp)
+	}
+	if sortStr == "desc" {
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].CreatedAt.After(result[j].CreatedAt)
+		})
+	} else {
+		sort.Slice(result, func(i, j int) bool {
+			return result[i].CreatedAt.Before(result[j].CreatedAt)
+		})
 	}
 	respondWithJson(w, 200, result)
 }
