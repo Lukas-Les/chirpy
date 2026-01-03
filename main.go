@@ -323,6 +323,94 @@ func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type UpdateUserRequest struct {
+	Password string `json:"password"`
+	Email    string `json:"email"`
+}
+
+type UpdateUserResponse struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
+
+func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, req *http.Request) {
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	userId, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+	decoder := json.NewDecoder(req.Body)
+	r := UpdateUserRequest{}
+	err = decoder.Decode(&r)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	hashedPassword, err := auth.HashPassword(r.Password)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+	}
+	updateParams := database.UpdateUserParams{
+		Email:          r.Email,
+		HashedPassword: hashedPassword,
+		ID:             userId,
+	}
+	dbUpdated, err := cfg.db.UpdateUser(req.Context(), updateParams)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	updated := UpdateUserResponse{
+		ID:        dbUpdated.ID,
+		CreatedAt: dbUpdated.CreatedAt,
+		UpdatedAt: dbUpdated.UpdatedAt,
+		Email:     r.Email,
+	}
+	respondWithJson(w, http.StatusOK, updated)
+}
+
+func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, req *http.Request) {
+	token, err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+	}
+	userId, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		respondWithError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	chirpIdStr := req.PathValue("id")
+	chirpId, err := uuid.Parse(chirpIdStr)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	chirp, err := cfg.db.GetChirpById(req.Context(), chirpId)
+	if err != nil {
+		respondWithError(w, http.StatusNotFound, err.Error())
+		return
+	}
+
+	if chirp.UserID != userId {
+		respondWithError(w, http.StatusForbidden, "")
+		return
+	}
+	err = cfg.db.DeleteChirp(req.Context(), chirpId)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func main() {
 	godotenv.Load()
 
@@ -348,7 +436,8 @@ func main() {
 	mux.HandleFunc("POST /api/login", cfg.handlerLogIn)
 	mux.HandleFunc("POST /api/refresh", cfg.handlerRefresh)
 	mux.HandleFunc("POST /api/revoke", cfg.handlerRevoke)
-
+	mux.HandleFunc("PUT /api/users", cfg.handlerUpdateUser)
+	mux.HandleFunc("DELETE /api/chirps/{id}", cfg.handlerDeleteChirp)
 	srv := &http.Server{
 		Addr:    ":" + port,
 		Handler: mux,
